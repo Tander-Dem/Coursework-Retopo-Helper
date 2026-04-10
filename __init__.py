@@ -10,10 +10,11 @@ bl_info = {
 
 import bpy
 import importlib
+
 from . import ui
 from . import operators
 from . import properties
-from .operators import snap, relax, analyze, fill_holes
+from .operators import snap, relax, analyze, decimate, fill_holes
 from .ui import panel
 
 modules = (
@@ -21,6 +22,7 @@ modules = (
     snap,
     relax,
     analyze,
+    decimate,
     fill_holes,
     panel,
 )

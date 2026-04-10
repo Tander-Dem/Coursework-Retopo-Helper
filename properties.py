@@ -3,6 +3,7 @@ from bpy.props import (
     PointerProperty,
     FloatProperty,
     IntProperty,
+    EnumProperty,
     BoolProperty,
 )
 from bpy.types import PropertyGroup
@@ -44,6 +45,26 @@ class RetopoHelperProperties(PropertyGroup):
         default=1,
         min=1,
         max=10,
+    )
+
+    relax_mode: EnumProperty(
+        name="Mode",
+        items=[
+            ("UNIFORM",    "Uniform",    "Even vertex distribution"),
+            ("CURVATURE",  "Curvature",  "Curvature-aware relaxation"),
+        ],
+        default="UNIFORM",
+    )
+
+    # -------------------------------------------------------------------------
+    # Decimate
+    # -------------------------------------------------------------------------
+    decimate_ratio: FloatProperty(
+        name="Ratio",
+        description="Fraction of faces to keep",
+        default=0.5,
+        min=0.1,
+        max=1.0,
     )
 
     # -------------------------------------------------------------------------
