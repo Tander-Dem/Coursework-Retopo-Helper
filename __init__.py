@@ -40,11 +40,13 @@ def register():
     relax.register()
     analyze.register()
     fill_holes.register()
+    decimate.register()
     panel.register()
 
 
 def unregister():
     panel.unregister()
+    decimate.unregister()
     fill_holes.unregister()
     analyze.unregister()
     relax.unregister()

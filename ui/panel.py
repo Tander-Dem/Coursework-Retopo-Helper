@@ -106,17 +106,20 @@ class RETOPO_PT_main_panel(bpy.types.Panel):
         box = layout.box()
         box.label(text="Decimation", icon='MOD_DECIM')
 
+        # --- Decimate Collapse ---
         box.prop(props, "decimate_ratio", text="Ratio")
-
-        # Попередній перегляд кількості граней після спрощення
         obj = context.active_object
         if obj and obj.type == 'MESH':
             current_faces = len(obj.data.polygons)
             preview_faces = int(current_faces * props.decimate_ratio)
-            row = box.row()
-            row.label(text=f"Result: ~{preview_faces} faces", icon='INFO')
-
+            box.label(text=f"Result: ~{preview_faces} faces", icon='INFO')
         box.operator("retopo.decimate", text="Apply Decimation", icon='MOD_DECIM')
+
+        box.separator(factor=0.5)
+
+        # --- Merge by Distance ---
+        box.prop(props, "merge_distance", text="Merge Distance")
+        box.operator("retopo.merge_by_distance", text="Merge by Distance", icon='AUTOMERGE_ON')
 
         # -------------------------------------------------------------------------
         # FILL HOLES

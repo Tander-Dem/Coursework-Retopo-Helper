@@ -67,6 +67,15 @@ class RetopoHelperProperties(PropertyGroup):
         max=1.0,
     )
 
+    merge_distance: FloatProperty(
+        name="Merge Distance",
+        description="Maximum distance between vertices to merge",
+        default=0.001,
+        min=0.00001,
+        max=1.0,
+        precision=4,
+    )
+
     # -------------------------------------------------------------------------
     # Analyze — фільтри виділення
     # -------------------------------------------------------------------------
