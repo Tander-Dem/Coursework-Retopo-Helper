@@ -126,7 +126,8 @@ class RETOPO_PT_main_panel(bpy.types.Panel):
         # -------------------------------------------------------------------------
         box = layout.box()
         box.label(text="Fill Holes", icon='MESH_GRID')
-        box.operator("retopo.fill_holes", text="Fill Holes", icon='MESH_GRID')
+        box.operator("retopo.find_holes", text="Find Holes", icon='VIEWZOOM')
+        box.operator("retopo.fill_selected", text="Fill Selected", icon='MESH_GRID')
 
 
 def register():

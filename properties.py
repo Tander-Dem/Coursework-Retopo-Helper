@@ -109,7 +109,7 @@ class RetopoHelperProperties(PropertyGroup):
         min=3,
         max=16,
     )
-
+    
 
 class RetopoStatsProperties(PropertyGroup):
     """Зберігає результати останнього запуску retopo.analyze."""
