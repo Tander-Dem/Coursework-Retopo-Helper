@@ -14,11 +14,16 @@ class RETOPO_PT_main_panel(bpy.types.Panel):
         stats  = context.scene.retopo_stats
 
         # -------------------------------------------------------------------------
-        # SNAP
+        # SNAP TO SURFACE
         # -------------------------------------------------------------------------
         box = layout.box()
         box.label(text="Snap to Surface", icon='SNAP_ON')
+ 
         box.prop(props, "snap_target", text="Target")
+ 
+        row = box.row(align=True)
+        row.prop(props, "snap_mode", expand=True)
+ 
         box.operator("retopo.snap", text="Snap Selected", icon='SNAP_ON')
 
         # -------------------------------------------------------------------------

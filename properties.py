@@ -28,6 +28,20 @@ class RetopoHelperProperties(PropertyGroup):
         max=10.0,
     )
 
+    snap_mode: EnumProperty(
+        name="Mode",
+        description=(
+            "Режим проєкції вершин на поверхню. "
+            "Shrinkwrap — найближча точка поверхні, надійніший для ретопології. "
+            "Project — ray-cast вздовж нормалі, залежить від якості нормалей ретопо-сітки"
+        ),
+        items=[
+            ("PROJECT",    "Project",    "Ray-cast вздовж нормалі"),
+            ("SHRINKWRAP", "Shrinkwrap", "Найближча точка поверхні"),
+        ],
+        default="SHRINKWRAP",
+    )
+
     # -------------------------------------------------------------------------
     # Relax
     # -------------------------------------------------------------------------

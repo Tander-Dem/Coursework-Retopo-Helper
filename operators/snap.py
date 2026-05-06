@@ -83,6 +83,66 @@ def _project_vertices(retopo_obj, highpoly_obj, context) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Shrinkwrap
+# ---------------------------------------------------------------------------
+
+def _shrinkwrap_vertices(retopo_obj, highpoly_obj, context) -> dict:
+    """
+    Проєктує вибрані вершини на поверхню highpoly_obj через closest_point_on_mesh.
+
+    На відміну від ray_cast — не залежить від нормалей ретопо-сітки.
+    Кожна вершина просто "прилипає" до найближчої точки поверхні.
+    Надійніший варіант для загального використання при ретопології.
+
+    Повертає:
+        {
+            "projected": int,   # успішно проєктовано
+            "missed":    int,   # closest_point не знайшов точки
+            "skipped":   int,   # не вибрані вершини
+        }
+    """
+    depsgraph = context.evaluated_depsgraph_get()
+
+    hp_eval       = highpoly_obj.evaluated_get(depsgraph)
+    hp_mw         = highpoly_obj.matrix_world
+    hp_mw_inv     = hp_mw.inverted()
+
+    retopo_mw     = retopo_obj.matrix_world
+    retopo_mw_inv = retopo_mw.inverted()
+
+    bm = bmesh.from_edit_mesh(retopo_obj.data)
+    bm.verts.ensure_lookup_table()
+
+    result = {"projected": 0, "missed": 0, "skipped": 0}
+
+    for vert in bm.verts:
+        if not vert.select:
+            result["skipped"] += 1
+            continue
+
+        # World-space позиція вершини
+        co_world = retopo_mw @ vert.co
+
+        # Переводимо в локальний простір high-poly
+        co_local = hp_mw_inv @ co_world
+
+        # Знаходимо найближчу точку на поверхні
+        hit, loc_local, _, _ = hp_eval.closest_point_on_mesh(co_local)
+
+        if hit:
+            # Переводимо назад у локальний простір retopo
+            loc_world = hp_mw @ loc_local
+            vert.co   = retopo_mw_inv @ loc_world
+            result["projected"] += 1
+        else:
+            result["missed"] += 1
+
+    bmesh.update_edit_mesh(retopo_obj.data, loop_triangles=False, destructive=False)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Operator
 # ---------------------------------------------------------------------------
 
@@ -107,14 +167,19 @@ class RETOPO_OT_snap(Operator):
 
     def execute(self, context):
         retopo_obj   = context.active_object
-        highpoly_obj = context.scene.retopo_helper.snap_target
+        props        = context.scene.retopo_helper
+        highpoly_obj = props.snap_target
+        mode         = props.snap_mode
 
-        # Перевіряємо, що target — меш
+        # Перевіряємо що target — меш
         if highpoly_obj.type != "MESH":
             self.report({"ERROR"}, f'"{highpoly_obj.name}" is not a mesh object.')
             return {"CANCELLED"}
 
-        result = _project_vertices(retopo_obj, highpoly_obj, context)
+        if mode == "SHRINKWRAP":
+            result = _shrinkwrap_vertices(retopo_obj, highpoly_obj, context)
+        else:
+            result = _project_vertices(retopo_obj, highpoly_obj, context)
 
         projected = result["projected"]
         missed    = result["missed"]
@@ -123,14 +188,19 @@ class RETOPO_OT_snap(Operator):
             self.report({"WARNING"}, "No vertices selected.")
             return {"CANCELLED"}
 
+        mode_label = "Shrinkwrap" if mode == "SHRINKWRAP" else "Project"
+
         if missed:
             self.report(
                 {"WARNING"},
-                f"Snapped {projected} vert(s). "
-                f"{missed} missed (no surface hit in either direction).",
+                f"[{mode_label}] Snapped {projected} vert(s). "
+                f"{missed} missed.",
             )
         else:
-            self.report({"INFO"}, f"Snapped {projected} vert(s) successfully.")
+            self.report(
+                {"INFO"},
+                f"[{mode_label}] Snapped {projected} vert(s) successfully.",
+            )
 
         return {"FINISHED"}
 
