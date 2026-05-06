@@ -1,2 +1,2 @@
-from . import analyze, fill_holes, relax, snap
+from . import analyze, fill_holes, relax, snap, decimate
 

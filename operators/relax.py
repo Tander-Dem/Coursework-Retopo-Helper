@@ -3,6 +3,8 @@ import bmesh
 from mathutils import Vector
 from bpy.types import Operator
 
+from ..utils.mesh_utils import get_move_constraint, calc_vert_normal
+
 
 # ---------------------------------------------------------------------------
 # Core
@@ -26,8 +28,7 @@ def _laplacian_relax(bm: bmesh.types.BMesh, strength: float, iterations: int) ->
     if not selected:
         return 0
 
-    # Рахуємо constraint для кожної вершини один раз перед ітераціями
-    constraints = {v: _get_move_constraint(v) for v in selected}
+    constraints = {v: get_move_constraint(v) for v in selected}
 
     for _ in range(iterations):
         targets = []
@@ -35,7 +36,6 @@ def _laplacian_relax(bm: bmesh.types.BMesh, strength: float, iterations: int) ->
         for vert in selected:
             constraint = constraints[vert]
 
-            # Повністю заблокована — пропускаємо
             if constraint == 'blocked':
                 continue
 
@@ -51,17 +51,14 @@ def _laplacian_relax(bm: bmesh.types.BMesh, strength: float, iterations: int) ->
             delta = centroid - vert.co
 
             if constraint is None:
-                # Вільна вершина — повний рух
                 new_co = vert.co + delta * strength
             else:
-                # Вздовж sharp краю — проєктуємо delta на напрямок краю
-                edge_dir     = constraint  # Vector вздовж краю
-                delta_along  = edge_dir * delta.dot(edge_dir)
-                new_co       = vert.co + delta_along * strength
+                edge_dir    = constraint
+                delta_along = edge_dir * delta.dot(edge_dir)
+                new_co      = vert.co + delta_along * strength
 
             targets.append((vert, new_co))
 
-        # Jacobi-step
         for vert, new_co in targets:
             vert.co = new_co
 
@@ -71,72 +68,6 @@ def _laplacian_relax(bm: bmesh.types.BMesh, strength: float, iterations: int) ->
 # ---------------------------------------------------------------------------
 # Curvature Relax
 # ---------------------------------------------------------------------------
-
-def _is_sharp_or_seam(edge) -> bool:
-    """Повертає True якщо ребро є sharp або seam."""
-    return edge.smooth is False or edge.seam
-
-
-def _get_sharp_edges(vert) -> list:
-    """Повертає список sharp/seam ребер що виходять з вершини."""
-    return [e for e in vert.link_edges if _is_sharp_or_seam(e)]
-
-
-def _get_move_constraint(vert):
-    """
-    Визначає обмеження руху вершини відносно sharp edges та seams.
-
-    Повертає одне з трьох:
-      None        — вершина вільна (не на sharp/seam)
-      'blocked'   — вершина заблокована повністю:
-                      - кутова (3+ sharp ребра)
-                      - кінець краю (1 sharp ребро)
-      Vector      — одиничний вектор вздовж краю:
-                      - пряма ділянка (рівно 2 sharp ребра)
-                      вершина може рухатись тільки вздовж цього вектора
-    """
-    sharp_edges = _get_sharp_edges(vert)
-    n = len(sharp_edges)
-
-    if n == 0:
-        # Вершина не на sharp/seam — вільна
-        return None
-
-    if n == 1 or n >= 3:
-        # Кінець краю або кутова вершина — повністю заблокована
-        return 'blocked'
-
-    # Рівно 2 sharp ребра — пряма ділянка краю
-    # Напрямок руху = вздовж краю між двома сусідніми sharp вершинами
-    v1 = sharp_edges[0].other_vert(vert)
-    v2 = sharp_edges[1].other_vert(vert)
-
-    edge_vec = v2.co - v1.co
-    length   = edge_vec.length
-
-    if length < 1e-8:
-        return 'blocked'
-
-    return edge_vec / length  # одиничний вектор вздовж краю
-
-
-def _calc_vert_normal(vert) -> Vector:
-    """
-    Усереднена нормаль вершини через прилеглі грані.
-    Якщо граней немає — повертає vert.normal як fallback.
-    """
-    faces = vert.link_faces
-    if not faces:
-        return vert.normal.copy()
-
-    normal = Vector((0.0, 0.0, 0.0))
-    for f in faces:
-        normal += f.normal
-    normal /= len(faces)
-
-    length = normal.length
-    return normal / length if length > 1e-8 else vert.normal.copy()
-
 
 def _curvature_relax(bm: bmesh.types.BMesh, strength: float, iterations: int) -> int:
     """
@@ -163,8 +94,7 @@ def _curvature_relax(bm: bmesh.types.BMesh, strength: float, iterations: int) ->
     if not selected:
         return 0
 
-    # Рахуємо constraint для кожної вершини один раз перед ітераціями
-    constraints = {v: _get_move_constraint(v) for v in selected}
+    constraints = {v: get_move_constraint(v) for v in selected}
 
     for _ in range(iterations):
         targets = []
@@ -172,7 +102,6 @@ def _curvature_relax(bm: bmesh.types.BMesh, strength: float, iterations: int) ->
         for vert in selected:
             constraint = constraints[vert]
 
-            # Повністю заблокована — пропускаємо
             if constraint == 'blocked':
                 continue
 
@@ -180,31 +109,23 @@ def _curvature_relax(bm: bmesh.types.BMesh, strength: float, iterations: int) ->
             if not neighbors:
                 continue
 
-            # Центроїд сусідів
             centroid = Vector((0.0, 0.0, 0.0))
             for nb in neighbors:
                 centroid += nb.co
             centroid /= len(neighbors)
 
-            # Нормаль поверхні у вершині
-            normal = _calc_vert_normal(vert)
-
-            # Вектор зміщення
-            delta = centroid - vert.co
+            normal = calc_vert_normal(vert)
+            delta  = centroid - vert.co
 
             if constraint is None:
-                # Вільна вершина — проєкція на дотичну площину поверхні
                 delta_tangent = delta - normal * delta.dot(normal)
             else:
-                # Вздовж sharp краю — проєктуємо на напрямок краю
-                # і додатково прибираємо компоненту вздовж нормалі
                 edge_dir      = constraint
                 delta_along   = edge_dir * delta.dot(edge_dir)
                 delta_tangent = delta_along - normal * delta_along.dot(normal)
 
             targets.append((vert, delta_tangent))
 
-        # Jacobi-step
         for vert, delta_tangent in targets:
             vert.co += delta_tangent * strength
 
@@ -247,8 +168,6 @@ class RETOPO_OT_relax(Operator):
         bm = bmesh.from_edit_mesh(obj.data)
         bm.verts.ensure_lookup_table()
 
-        # Оновлюємо нормалі граней перед curvature relax —
-        # щоб _calc_vert_normal отримувала актуальні дані
         if mode == 'CURVATURE':
             bm.faces.ensure_lookup_table()
             for f in bm.faces:

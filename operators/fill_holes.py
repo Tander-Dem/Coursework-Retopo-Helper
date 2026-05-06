@@ -4,73 +4,17 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from bpy.types import Operator
 
+from ..utils.mesh_utils import safe_face_add, calc_centroid, get_neighbor_normal
+from ..utils.topology_utils import collect_boundary_loops, collect_selected_loops
+
+
 # ===========================================================================
 # Параметри алгоритму
 # ===========================================================================
-SIMPLE_HOLE_MAX_EDGES    = 4
-TUNNEL_THRESHOLD_RATIO   = 0.4   # вузьке місце = менше 40% середнього діаметра
-TUNNEL_SEARCH_RANGE      = 4     # ділимо loop на TUNNEL_SEARCH_RANGE частин для пошуку
-
-# ===========================================================================
-# Збір boundary loops
-# ===========================================================================
-
-def _collect_boundary_loops(bm) -> list[list]:
-    boundary_edges = {e for e in bm.edges if e.is_boundary}
-    if not boundary_edges:
-        return []
-
-    loops = []
-    while boundary_edges:
-        start_edge = next(iter(boundary_edges))
-        boundary_edges.discard(start_edge)
-        verts        = [start_edge.verts[0], start_edge.verts[1]]
-        current_vert = start_edge.verts[1]
-
-        while True:
-            next_edge = None
-            for e in current_vert.link_edges:
-                if e in boundary_edges:
-                    next_edge = e
-                    break
-            if next_edge is None:
-                break
-            boundary_edges.discard(next_edge)
-            next_vert = (
-                next_edge.verts[1]
-                if next_edge.verts[0] == current_vert
-                else next_edge.verts[0]
-            )
-            verts.append(next_vert)
-            current_vert = next_vert
-            if current_vert == start_edge.verts[0]:
-                break
-
-        is_closed = (current_vert == start_edge.verts[0])
-        if is_closed and len(verts) >= 3:
-            if verts[-1] == verts[0]:
-                verts = verts[:-1]
-            loops.append(verts)
-    return loops
-
-
-def _collect_selected_loops(bm) -> list[list]:
-    all_loops = _collect_boundary_loops(bm)
-    if not all_loops:
-        return []
-    selected_loops = []
-    for verts in all_loops:
-        loop_edges = []
-        for i in range(len(verts)):
-            v1, v2 = verts[i], verts[(i + 1) % len(verts)]
-            edge = bm.edges.get((v1, v2))
-            if edge:
-                loop_edges.append(edge)
-        if not loop_edges:
-            continue
-        if sum(1 for e in loop_edges if e.select) / len(loop_edges) > 0.5:
-            selected_loops.append(verts)
-    return selected_loops
+SIMPLE_HOLE_MAX_EDGES  = 4
+TUNNEL_THRESHOLD_RATIO = 0.4   # вузьке місце = менше 40% середнього діаметра
+TUNNEL_SEARCH_RANGE    = 4     # ділимо loop на TUNNEL_SEARCH_RANGE частин для пошуку
+BVH_THRESHOLD          = 100   # поріг кількості вершин для BVH замість O(n²)
 
 
 # ===========================================================================
@@ -84,10 +28,6 @@ def _calc_avg_edge_length(verts: list) -> float:
     for i in range(n):
         total += (verts[(i + 1) % n].co - verts[i].co).length
     return total / n if n > 0 else 0.0
-
-
-# Поріг кількості вершин після якого використовуємо BVH замість O(n²)
-BVH_THRESHOLD = 100
 
 
 def _find_tunnel_entry(verts: list) -> tuple | None:
@@ -124,7 +64,6 @@ def _find_tunnel_entry(verts: list) -> tuple | None:
                 if dist < threshold and dist < best_dist:
                     best_dist = dist
                     best_pair = (i, j)
-
     else:
         # --- Великий loop — BVHTree O(log n) ---
         for i in range(n):
@@ -135,7 +74,6 @@ def _find_tunnel_entry(verts: list) -> tuple | None:
             if not candidates:
                 continue
 
-            # BVH з вироджених трикутників (точка = tri з нульовою площею)
             bvh_verts = [co for _, co in candidates]
             bvh_polys = [(k, k, k) for k in range(len(candidates))]
 
@@ -147,7 +85,6 @@ def _find_tunnel_entry(verts: list) -> tuple | None:
                     best_dist = dist
                     best_pair = (i, candidates[idx][0])
             except Exception:
-                # Fallback на прямий перебір
                 for j, co in candidates:
                     dist = (positions[i] - co).length
                     if dist < threshold and dist < best_dist:
@@ -170,14 +107,7 @@ def _fill_tunnel(bm, verts: list, entry: tuple) -> list[list]:
     Якщо тунель повністю закрив отвір — повертає порожній список.
     """
     n = len(verts)
-
-    neighbor_normal = None
-    for v in verts:
-        for f in v.link_faces:
-            neighbor_normal = f.normal.copy()
-            break
-        if neighbor_normal:
-            break
+    neighbor_normal = get_neighbor_normal(verts)
 
     i, j      = entry
     left_idx  = i
@@ -201,20 +131,19 @@ def _fill_tunnel(bm, verts: list, entry: tuple) -> list[list]:
         unique_count = len({left_idx, next_left, next_right, right_idx})
 
         if unique_count == 4:
-            _safe_face_add(bm, [v0, v1, v2, v3], neighbor_normal)
+            safe_face_add(bm, [v0, v1, v2, v3], neighbor_normal)
         elif unique_count == 3:
             unique = list(dict.fromkeys([left_idx, next_left, next_right, right_idx]))
-            _safe_face_add(bm, [verts[unique[0]], verts[unique[1]], verts[unique[2]]], neighbor_normal)
-            return []  # тунель повністю закрив отвір
+            safe_face_add(bm, [verts[unique[0]], verts[unique[1]], verts[unique[2]]], neighbor_normal)
+            return []
 
         if closing:
-            return []  # тунель повністю закрив отвір
+            return []
 
         left_idx  = next_left
         right_idx = next_right
 
     # --- Тунель зупинився — збираємо два залишки ---
-    # Залишок A: від next_left до next_right йдучи вправо по loop
     remainder_a = []
     idx = left_idx
     while idx != right_idx:
@@ -224,7 +153,6 @@ def _fill_tunnel(bm, verts: list, entry: tuple) -> list[list]:
             break
     remainder_a.append(verts[right_idx])
 
-    # Залишок B: від next_right до next_left йдучи вправо по loop
     remainder_b = []
     idx = right_idx
     while idx != left_idx:
@@ -234,7 +162,6 @@ def _fill_tunnel(bm, verts: list, entry: tuple) -> list[list]:
             break
     remainder_b.append(verts[left_idx])
 
-    # Фільтруємо залишки — мінімум 3 вершини щоб мало сенс заповнювати
     result = []
     if len(remainder_a) >= 3:
         result.append(remainder_a)
@@ -251,10 +178,6 @@ def _ensure_even_verts(bm, verts: list) -> list:
     """
     Якщо кількість вершин непарна — розбиває найдовше NON-BOUNDARY ребро.
     Це дає парну кількість вершин і гарантує чисті quads.
-
-    Boundary ребра не розбиваємо — bisect_edges на boundary edge
-    створює нову вершину яка стає частиною нового boundary loop
-    і порушує логіку збору loops при наступному виклику.
     """
     if len(verts) % 2 == 0:
         return verts
@@ -267,7 +190,6 @@ def _ensure_even_verts(bm, verts: list) -> list:
         v1, v2 = verts[i], verts[(i + 1) % n]
         edge   = bm.edges.get((v1, v2))
 
-        # Пропускаємо boundary ребра
         if edge is None or edge.is_boundary:
             continue
 
@@ -276,7 +198,6 @@ def _ensure_even_verts(bm, verts: list) -> list:
             max_dist = dist
             v_pair   = (v1, v2)
 
-    # Якщо всі ребра boundary — повертаємо без змін
     if v_pair[0] is None:
         return verts
 
@@ -290,14 +211,6 @@ def _ensure_even_verts(bm, verts: list) -> list:
     return verts
 
 
-def _calc_centroid(verts: list) -> Vector:
-    """Центроїд списку вершин."""
-    co = Vector((0.0, 0.0, 0.0))
-    for v in verts:
-        co += v.co
-    return co / len(verts)
-
-
 def _centroid_is_inside(verts: list, centroid: Vector) -> bool:
     """
     Перевіряє чи центроїд знаходиться всередині boundary loop.
@@ -306,39 +219,32 @@ def _centroid_is_inside(verts: list, centroid: Vector) -> bool:
     проєктуємо всі вершини і центроїд на площину XY нормалі loop,
     потім рахуємо перетини горизонтального променя з ребрами.
     Непарна кількість перетинів = точка всередині полігона.
-
-    Якщо центроїд поза loop — _fill_to_centroid створить
-    перевернуті або пересічені грані.
     """
     n = len(verts)
     if n < 3:
         return False
 
-    # Нормаль площини loop — середня нормаль прилеглих граней
     normal = Vector((0.0, 0.0, 0.0))
     for v in verts:
         for f in v.link_faces:
             normal += f.normal
     if normal.length_squared < 1e-8:
-        return True  # не можемо визначити — припускаємо що всередині
+        return True
     normal = normal.normalized()
 
-    # Базис площини: два перпендикулярних вектори
     ref = Vector((1.0, 0.0, 0.0))
     if abs(normal.dot(ref)) > 0.9:
         ref = Vector((0.0, 1.0, 0.0))
     axis_x = normal.cross(ref).normalized()
     axis_y = normal.cross(axis_x).normalized()
 
-    # Проєкція вершин на площину
     def project(co):
         delta = co - verts[0].co
         return (delta.dot(axis_x), delta.dot(axis_y))
 
-    pts  = [project(v.co) for v in verts]
+    pts    = [project(v.co) for v in verts]
     cx, cy = project(centroid)
 
-    # Ray casting — горизонтальний промінь вправо від центроїда
     inside = False
     for i in range(n):
         x1, y1 = pts[i]
@@ -354,8 +260,7 @@ def _centroid_is_inside(verts: list, centroid: Vector) -> bool:
 def _calc_ring_count(verts: list, centroid: Vector) -> int:
     """
     Кількість концентричних кілець = середній радіус / середня довжина ребра.
-    Дає приблизно квадратні грані — висота ≈ ширині.
-    Мінімум 1 кільце.
+    Дає приблизно квадратні грані. Мінімум 1 кільце.
     """
     n          = len(verts)
     avg_radius = sum((v.co - centroid).length for v in verts) / n
@@ -384,103 +289,60 @@ def _fill_to_centroid(bm, verts: list) -> None:
     if n < 3:
         return
 
-    # Трикутник — закриваємо одразу, центроїд не потрібен
+    neighbor_normal = get_neighbor_normal(verts)
+
     if n == 3:
-        neighbor_normal = None
-        for v in verts:
-            for f in v.link_faces:
-                neighbor_normal = f.normal.copy()
-                break
-            if neighbor_normal:
-                break
-        _safe_face_add(bm, verts, neighbor_normal)
+        safe_face_add(bm, verts, neighbor_normal)
         return
 
-    # Знаходимо нормаль для орієнтації граней
-    neighbor_normal = None
-    for v in verts:
-        for f in v.link_faces:
-            neighbor_normal = f.normal.copy()
-            break
-        if neighbor_normal:
-            break
+    centroid = calc_centroid(verts)
 
-    centroid = _calc_centroid(verts)
-
-    # Перевіряємо чи центроїд всередині loop
-    # Якщо ні — S-подібний або увігнутий отвір, просто закриваємо одною гранню
     if not _centroid_is_inside(verts, centroid):
-        neighbor_normal = None
-        for v in verts:
-            for f in v.link_faces:
-                neighbor_normal = f.normal.copy()
-                break
-            if neighbor_normal:
-                break
-        _safe_face_add(bm, verts, neighbor_normal)
+        safe_face_add(bm, verts, neighbor_normal)
         return
 
-    ring_count = _calc_ring_count(verts, centroid)
-
-    current_ring = list(verts)  # поточний периметр — починаємо з boundary loop
+    ring_count   = _calc_ring_count(verts, centroid)
+    current_ring = list(verts)
 
     for ring_idx in range(1, ring_count + 1):
-
-        # Відносна позиція нового кільця між периметром і центром
-        t = ring_idx / ring_count  # 0.0 = периметр, 1.0 = центр
-
+        t      = ring_idx / ring_count
         ring_n = len(current_ring)
 
         if ring_idx == ring_count:
-            # --- Останнє кільце — закриваємо центральний отвір ---
+            center_v = bm.verts.new(centroid)
+            bm.verts.ensure_lookup_table()
             if ring_n % 2 == 0:
-                # Парна кількість — закриваємо quad-гранями попарно
-                # Кожен quad обʼєднує дві сусідні пари вершин
-                center_v = bm.verts.new(centroid)
-                bm.verts.ensure_lookup_table()
                 for i in range(0, ring_n, 2):
                     v0 = current_ring[i]
                     v1 = current_ring[(i + 1) % ring_n]
                     v2 = current_ring[(i + 2) % ring_n]
-                    _safe_face_add(bm, [v0, v1, v2, center_v], neighbor_normal)
+                    safe_face_add(bm, [v0, v1, v2, center_v], neighbor_normal)
             else:
-                # Непарна — один трикутник неминучий, решта quads
-                center_v = bm.verts.new(centroid)
-                bm.verts.ensure_lookup_table()
-                # Перший — трикутник
-                _safe_face_add(bm, [current_ring[0], current_ring[1], center_v], neighbor_normal)
-                # Решта — quads
+                safe_face_add(bm, [current_ring[0], current_ring[1], center_v], neighbor_normal)
                 for i in range(1, ring_n - 1, 2):
                     v0 = current_ring[i]
                     v1 = current_ring[(i + 1) % ring_n]
                     v2 = current_ring[(i + 2) % ring_n]
-                    _safe_face_add(bm, [v0, v1, v2, center_v], neighbor_normal)
+                    safe_face_add(bm, [v0, v1, v2, center_v], neighbor_normal)
             return
 
-        # --- Будуємо нове кільце вершин через lerp ---
         new_ring = []
         for i in range(ring_n):
             new_co = current_ring[i].co.lerp(centroid, t)
             new_v  = bm.verts.new(new_co)
             new_ring.append(new_v)
 
-        # ensure_lookup_table після додавання нових вершин — обовʼязково
         bm.verts.ensure_lookup_table()
 
-        # --- Будуємо quad-грані між поточним і новим кільцем ---
         for i in range(ring_n):
             v0 = current_ring[i]
             v1 = current_ring[(i + 1) % ring_n]
             v2 = new_ring[(i + 1) % ring_n]
             v3 = new_ring[i]
-
-            # Перевіряємо що всі вершини різні
             if len({v0, v1, v2, v3}) < 4:
                 continue
+            safe_face_add(bm, [v0, v1, v2, v3], neighbor_normal)
 
-            _safe_face_add(bm, [v0, v1, v2, v3], neighbor_normal)
-
-        # Легке згладжування нових вершин для рівномірного розподілу
         bmesh.ops.smooth_vert(
             bm,
             verts=new_ring,
@@ -494,7 +356,6 @@ def _fill_to_centroid(bm, verts: list) -> None:
             use_axis_z=True,
         )
 
-        # Нове кільце стає поточним периметром
         current_ring = new_ring
 
 
@@ -502,42 +363,12 @@ def _fill_to_centroid(bm, verts: list) -> None:
 # Головна логіка заповнення
 # ===========================================================================
 
-def _safe_face_add(bm, verts: list, neighbor_normal=None):
-    """
-    Безпечно створює грань з перевіркою унікальності вершин і орієнтації.
-    Централізована заміна розкиданих try/except по всьому коду.
-    Повертає нову грань або None якщо створення неможливе.
-    """
-    if len(set(verts)) < 3:
-        return None
-    try:
-        face = bm.faces.new(verts)
-        if neighbor_normal and face.normal.dot(neighbor_normal) < 0:
-            face.normal_flip()
-        return face
-    except ValueError:
-        # Грань вже існує
-        return None
-
-
-def _select_loop_edges(bm, verts: list) -> None:
-    """Виділяє ребра петлі."""
-    for e in bm.edges:
-        e.select = False
-    n = len(verts)
-    for i in range(n):
-        v1, v2 = verts[i], verts[(i + 1) % n]
-        edge   = bm.edges.get((v1, v2))
-        if edge:
-            edge.select = True
-
-
 def _fill_loop(obj, bm, verts: list, depth: int = 0, stats: dict = None) -> bool:
     """
     Рекурсивне заповнення одного loop.
 
     Ієрархія:
-      1. Прості отвори (≤ SIMPLE_HOLE_MAX_EDGES) → bm.faces.new
+      1. Прості отвори (≤ SIMPLE_HOLE_MAX_EDGES) → safe_face_add
       2. Є тунельне місце → _fill_tunnel → рекурсія на кожен залишок
       3. Тунелів немає → _ensure_even_verts + _fill_to_centroid
 
@@ -559,14 +390,8 @@ def _fill_loop(obj, bm, verts: list, depth: int = 0, stats: dict = None) -> bool
 
     # --- 1. ПРОСТІ ОТВОРИ ---
     if n <= SIMPLE_HOLE_MAX_EDGES:
-        neighbor_normal = None
-        for v in verts:
-            for f in v.link_faces:
-                neighbor_normal = f.normal.copy()
-                break
-            if neighbor_normal:
-                break
-        face = _safe_face_add(bm, verts, neighbor_normal)
+        neighbor_normal = get_neighbor_normal(verts)
+        face = safe_face_add(bm, verts, neighbor_normal)
         if face:
             stats['simple'] = stats.get('simple', 0) + 1
             return True
@@ -620,7 +445,6 @@ class RETOPO_OT_find_holes(Operator):
     def execute(self, context):
         obj = context.active_object
 
-        # Явно перемикаємо в Edge Select Mode незалежно від поточного режиму
         if context.tool_settings.mesh_select_mode != (False, True, False):
             context.tool_settings.mesh_select_mode = (False, True, False)
 
@@ -628,13 +452,12 @@ class RETOPO_OT_find_holes(Operator):
         bm.edges.ensure_lookup_table()
         bm.verts.ensure_lookup_table()
 
-        # Знімаємо все виділення перед пошуком
         for e in bm.edges:
             e.select = False
         for v in bm.verts:
             v.select = False
 
-        loops = _collect_boundary_loops(bm)
+        loops = collect_boundary_loops(bm)
         if not loops:
             self.report({"INFO"}, "No closed holes found.")
             return {"CANCELLED"}
@@ -675,8 +498,6 @@ class RETOPO_OT_fill_selected(Operator):
         return obj is not None and obj.type == "MESH" and context.mode == "EDIT_MESH"
 
     def execute(self, context):
-        # Підтримка всіх виділених mesh-обʼєктів в Edit Mode
-        # context.objects_in_mode дає всі обʼєкти що зараз в Edit Mode
         objects = [
             obj for obj in context.objects_in_mode
             if obj.type == "MESH"
@@ -694,11 +515,10 @@ class RETOPO_OT_fill_selected(Operator):
         for obj in objects:
             bm = bmesh.from_edit_mesh(obj.data)
 
-            # Очищення кастомних нормалей щоб уникнути чорних граней
             if obj.data.has_custom_normals:
                 bpy.ops.mesh.customdata_custom_split_normals_clear()
 
-            loops = _collect_selected_loops(bm)
+            loops = collect_selected_loops(bm)
             if not loops:
                 continue
 
@@ -714,7 +534,6 @@ class RETOPO_OT_fill_selected(Operator):
                 else:
                     all_skipped += 1
 
-            # Перераховуємо нормалі і оновлюємо меш для кожного обʼєкта
             bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
             bm.select_flush(False)
             bmesh.update_edit_mesh(obj.data, loop_triangles=True, destructive=True)
@@ -724,7 +543,6 @@ class RETOPO_OT_fill_selected(Operator):
             self.report({"WARNING"}, "No holes selected. Run Find Holes first.")
             return {"CANCELLED"}
 
-        # Примусово оновлюємо вʼюпорт
         for area in context.screen.areas:
             if area.type == 'VIEW_3D':
                 area.tag_redraw()

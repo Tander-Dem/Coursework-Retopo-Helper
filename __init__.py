@@ -12,19 +12,23 @@ import bpy
 import importlib
 
 from . import ui
+from . import utils 
 from . import operators
 from . import properties
+from .utils import mesh_utils, topology_utils
 from .operators import snap, relax, analyze, decimate, fill_holes
 from .ui import panel
 
 modules = (
+    mesh_utils,
+    topology_utils,
     properties,
     snap,
     relax,
     analyze,
     decimate,
     fill_holes,
-    panel,
+    panel
 )
 
 def reload_modules():

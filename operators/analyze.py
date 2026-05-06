@@ -2,48 +2,8 @@ import bpy
 import bmesh
 from bpy.types import Operator
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _collect_topology(bm, pole_threshold: int):
-    """
-    Повертає три списки індексів BMesh-елементів:
-      poles  — вершини, де кількість ребер != 4 (або != pole_threshold)
-      tris   — грані з 3 вершинами
-      ngons  — грані з 5+ вершинами
-    """
-    poles = [v.index for v in bm.verts if len(v.link_edges) != pole_threshold]
-    tris  = [f.index for f in bm.faces if len(f.verts) == 3]
-    ngons = [f.index for f in bm.faces if len(f.verts) >= 5]
-    return poles, tris, ngons
-
-
-def _select_verts_by_index(bm, indices: list[int], deselect_all: bool = False):
-    if deselect_all:
-        for v in bm.verts:
-            v.select = False
-    for idx in indices:
-        bm.verts[idx].select = True
-
-
-def _select_faces_by_index(bm, indices: list[int], deselect_all: bool = False):
-    if deselect_all:
-        for f in bm.faces:
-            f.select = False
-        for v in bm.verts:
-            v.select = False
-        for e in bm.edges:
-            e.select = False
-    for idx in indices:
-        face = bm.faces[idx]
-        face.select = True
-        # Вибираємо вершини і ребра грані для коректного відображення
-        for v in face.verts:
-            v.select = True
-        for e in face.edges:
-            e.select = True
+from ..utils.topology_utils import collect_topology
+from ..utils.mesh_utils import select_verts_by_index, select_faces_by_index
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +35,7 @@ class RETOPO_OT_analyze(Operator):
         bm.edges.ensure_lookup_table()
         bm.faces.ensure_lookup_table()
 
-        poles, tris, ngons = _collect_topology(bm, props.pole_threshold)
+        poles, tris, ngons = collect_topology(bm, props.pole_threshold)
 
         # --- Знімаємо все виділення перед новим ---
         for v in bm.verts: v.select = False
@@ -84,13 +44,13 @@ class RETOPO_OT_analyze(Operator):
 
         # --- Виділяємо відповідно до прапорців ---
         if props.show_poles:
-            _select_verts_by_index(bm, poles)
+            select_verts_by_index(bm, poles)
 
         if props.show_tris:
-            _select_faces_by_index(bm, tris)
+            select_faces_by_index(bm, tris)
 
         if props.show_ngons:
-            _select_faces_by_index(bm, ngons)
+            select_faces_by_index(bm, ngons)
 
         bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
 
