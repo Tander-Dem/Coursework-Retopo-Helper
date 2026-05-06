@@ -560,6 +560,9 @@ class RETOPO_OT_fill_selected(Operator):
             msg += f" {all_skipped} could not be filled."
 
         self.report({level}, msg)
+
+        # Автоматично шукаємо отвори що залишились
+        bpy.ops.retopo.find_holes()
         return {"FINISHED"}
 
 
