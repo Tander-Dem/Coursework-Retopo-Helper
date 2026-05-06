@@ -561,8 +561,22 @@ class RETOPO_OT_fill_selected(Operator):
 
         self.report({level}, msg)
 
-        # Автоматично шукаємо отвори що залишились
-        bpy.ops.retopo.find_holes()
+        # Оновлюємо виділення: залишаємо тільки boundary edges що ще існують.
+        # НЕ викликаємо find_holes() — щоб не перезаписувати виділення яке
+        # користувач відредагував вручну. Просто знімаємо виділення з ребер
+        # що більше не є boundary (були успішно заповнені).
+        for obj in objects:
+            bm = bmesh.from_edit_mesh(obj.data)
+            bm.edges.ensure_lookup_table()
+            for e in bm.edges:
+                if e.select and not e.is_boundary:
+                    e.select = False
+                    for v in e.verts:
+                        # знімаємо з вершини тільки якщо вона більше не на межі
+                        if not any(ed.is_boundary for ed in v.link_edges):
+                            v.select = False
+            bmesh.update_edit_mesh(obj.data)
+
         return {"FINISHED"}
 
 
@@ -570,7 +584,59 @@ class RETOPO_OT_fill_selected(Operator):
 # Реєстрація
 # ===========================================================================
 
-classes = (RETOPO_OT_find_holes, RETOPO_OT_fill_selected)
+class RETOPO_OT_grid_fill(Operator):
+    bl_idname  = "retopo.grid_fill"
+    bl_label   = "Grid Fill"
+    bl_description = (
+        "Заповнює виділений отвір рівномірною сіткою квадів (Grid Fill). "
+        "Працює так само як вбудований Grid Fill у Blender — "
+        "виділи потрібні ребра і натисни кнопку"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (
+            obj is not None
+            and obj.type == "MESH"
+            and context.mode == "EDIT_MESH"
+        )
+
+    span: bpy.props.IntProperty(
+        name="Span",
+        description="Кількість стовпців сітки (0 = авто)",
+        default=0,
+        min=0,
+        soft_max=20,
+    )
+    offset: bpy.props.IntProperty(
+        name="Offset",
+        description="Зміщення початкової вершини",
+        default=0,
+        soft_min=-100,
+        soft_max=100,
+    )
+    use_interp_simple: bpy.props.BoolProperty(
+        name="Simple Interpolation",
+        default=False,
+    )
+
+    def execute(self, context):
+        kwargs = {"offset": self.offset, "use_interp_simple": self.use_interp_simple}
+        if self.span > 0:
+            kwargs["span"] = self.span
+
+        try:
+            bpy.ops.mesh.fill_grid(**kwargs)
+        except RuntimeError as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, "Grid Fill applied successfully.")
+        return {"FINISHED"}
+
+classes = (RETOPO_OT_find_holes, RETOPO_OT_fill_selected, RETOPO_OT_grid_fill)
 
 
 def register():
