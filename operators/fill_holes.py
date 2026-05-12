@@ -515,9 +515,6 @@ class RETOPO_OT_fill_selected(Operator):
         for obj in objects:
             bm = bmesh.from_edit_mesh(obj.data)
 
-            if obj.data.has_custom_normals:
-                bpy.ops.mesh.customdata_custom_split_normals_clear()
-
             loops = collect_selected_loops(bm)
             if not loops:
                 continue
